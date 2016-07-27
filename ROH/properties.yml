@@ -35,6 +35,7 @@ lo_ip_subnet: '10.254.0.0/24'
 # byte is fixed to 253.
 server_ip_base: '10.'
 default_vlan: 20
+docker_ip_base: '10.128.'
 
 ################### Dual-Attach Server CONFIGURATION ################
 # Update the clag-peer ports based on how many server ports are there

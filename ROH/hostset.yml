@@ -90,14 +90,111 @@
       with_items: "{{ ansible_interfaces }}"
       notify: Reload link config for hosts
 
-    - name: Install iproute2
-      apt: name=iproute state=present update_cache=yes
+    - name: Setup key for docker
+      apt_key: keyserver=ha.pool.sks-keyservers.net id=58118E89F3A912897C070ADBF76221572C52609D
+      become: yes
 
-    - name: Copy quagga deb
-      copy: src=./quagga_0.99.23.1-1+cl3u1_trusty_amd64.deb dest=/home/vagrant/
+    - name: Add docker engine repo
+      apt_repository: repo='deb [arch=amd64] https://apt.dockerproject.org/repo ubuntu-xenial experimental' update_cache=yes
+      become: yes
 
-    - name: Install quagga deb
-      apt: deb="/home/vagrant/quagga_0.99.23.1-1+cl3u1_trusty_amd64.deb" state=present
+    - name: Add docker
+      apt: name=docker-engine state=present
+      become: yes
+
+    - name: Add user vagrant to docker group to allow non-sudo access
+      user: name=vagrant append=yes groups=docker
+      become: yes
+
+    - name: Verify installed docker is right version
+      command: curl --unix-socket /var/run/docker.sock http:/info
+      register: docker_version
+
+    - assert: { that: "(docker_version.stdout|from_json)['ExperimentalBuild'] == true" }
+
+    - assert: { that: "(docker_version.stdout|from_json)['ServerVersion']|match('1.12') == true" }
+
+    - name: Enable default arp_notify sysctl
+      sysctl: name=net.ipv4.conf.all.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+      become: yes
+
+    - name: Enable all arp_notify sysctl
+      sysctl: name=net.ipv4.conf.default.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+      become: yes
+
+    - name: Enable arp_notify for every interface
+      sysctl: name=net.ipv4.conf.{{ item }}.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+      with_items: "{{ ansible_interfaces }}"
+      when: "{{ (item != 'lo') and (item != 'lo_1' ) }}"
+      ignore_errors: yes
+      become: yes
+
+    - name: Identify subnet from which docker bridge IP is assigned
+      set_fact:
+        docker_bip: |
+          {% if (mystr[0]|int %2) == 1 %}
+          {{ docker_ip_base + mystr[0] + '.1/24'  }}
+          {%else%}
+          {{ docker_ip_base + (mystr[0]|int -1)|string + '.1/24' }}
+          {%endif%}
+
+      when: "{{ dual_attach_hosts }}"
+
+    - name: Identify subnet from which hosts are assigned IPs for single-attach
+      set_fact:
+        docker_bip: |
+          {{ docker_ip_base + mystr[0] + '.1/24' }}
+
+      when: "{{ not dual_attach_hosts }}"
+
+    - name: Create dir for docker startup customization
+      file: path=/etc/systemd/system/docker.service.d/ state=directory mode=0755
+      become: yes
+
+    - name: Fixup docker to not do NAT
+      blockinfile:
+        dest: /etc/systemd/system/docker.service.d/noiptables.conf
+        create: yes
+        block: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/docker daemon -H fd:// --iptables=false --ip-masq=false --ip-forward=true --bip={{ docker_bip }}
+
+      become: yes
+
+    - name: Reload systemd config
+      command: systemctl daemon-reload
+      become: yes
+
+    - name: Stop docker service
+      service: name=docker state=stopped
+      become: yes
+
+    - name: Cleanup IP tables NAT rules set by docker
+      command: iptables -F -t nat
+      become: yes
+
+    - name: Cleanup IP tables filter rules set by docker
+      command: iptables -F -t filter
+      become: yes
+
+    - name: Restart docker
+      service: name=docker state=started
+      become: yes
+
+
+### start the container
+
+    - name: Download the alpine container for later use
+      command: docker pull alpine
+
+    - name: Create The Quagga Docker Container
+      command: docker run -itd --net=host --privileged=true --name=quagga_docker cumulusnetworks/quagga:xenial-latest
+      ignore_errors: yes
+
+    - name: start docker containers (in case not running)
+      command: docker start quagga_docker
+      ignore_errors: yes
 
     - name: Install sysctls needed for OSPF
       blockinfile:
@@ -110,45 +207,21 @@
       when: "{{ protocol == 'ospf' }}"
       notify: Set sysctls
 
-    - name: Write daemons file for BGP
-      blockinfile:
-        dest: /etc/quagga/daemons
-        create: yes
-        block: |
-           zebra=yes
-           bgpd=yes
-
-      become: yes  
-      when: "{{ protocol == 'bgp' }}"
-      notify: Restart quagga
-      tags: routing
-
-    - name: Write daemons file for OSPF
-      blockinfile:
-        dest: /etc/quagga/daemons
-        create: yes
-        block: |
-           zebra=yes
-           ospfd=yes
-
-      become: yes
-      when: "{{ protocol == 'ospf' }}"
-      notify: Restart quagga
-      tags: routing
+    - name: Remove any existing config file
+      file: name=/tmp/Quagga.conf state=absent
 
     - name: Write base quagga config
       blockinfile:
-        dest: /etc/quagga/Quagga.conf
+        dest: /tmp/Quagga.conf
         marker: "!{mark} base config ANSIBLE MANAGED BLOCK"
         create: yes
         block: |
           log file /var/log/quagga/quagga.log
           !
-      notify: Restart quagga
 
     - name: Enable IPv6 RA on inband ports
       blockinfile:
-        dest: /etc/quagga/Quagga.conf
+        dest: /tmp/Quagga.conf
         marker: "!{mark} {{ item }} config ANSIBLE MANAGED BLOCK"
         block: |
           interface {{ item }}
@@ -159,40 +232,42 @@
                 (item != ansible_default_ipv4.interface) and
                 (item != 'lo') and (item != 'lo_1' ) }}"
       with_items: "{{ ansible_interfaces }}"
-      notify: Restart quagga
 
     - name: Write base BGP config
       blockinfile:
-        dest: /etc/quagga/Quagga.conf
+        dest: /tmp/Quagga.conf
         marker: "!{mark} base bgp config ANSIBLE MANAGED BLOCK"
         create: yes
         block: |
+          route-map DOCKER permit 10
+           match interface docker0
+          !
           router bgp 65535
            bgp router-id {{ host_ip_addr.split()[0] }}
+           bgp bestpath as-path multipath-relax
            neighbor TOR peer-group
            neighbor TOR remote-as external
            neighbor TOR capability extended-nexthop
+           redistribute connected route-map DOCKER
            network {{ host_ip_addr.split()[0] }}/32
 
       when: "{{ (protocol == 'bgp')  }}"
-      notify: Restart quagga
 
     - name: Write BGP interface config
       blockinfile:
-        dest: /etc/quagga/Quagga.conf
+        dest: /tmp/Quagga.conf
         marker: "!{mark} {{item }} bgp interface config ANSIBLE MANAGED BLOCK"
         block: |
           neighbor {{ item }} interface peer-group TOR
 
       when: "{{ (protocol == 'bgp') and
                 (item != ansible_default_ipv4.interface) and
-                (item != 'lo') and (item != 'lo_1' ) }}"
+                (item != 'lo') and (item != 'lo_1') and (item != 'docker0') }}"
       with_items: "{{ ansible_interfaces }}"
-      notify: Restart quagga
 
     - name: Write interface quagga config for OSPF
       blockinfile:
-        dest: /etc/quagga/Quagga.conf
+        dest: /tmp/Quagga.conf
         marker: "!{mark} {{ item }} config ANSIBLE MANAGED BLOCK"
         create: yes
         block: |
@@ -204,11 +279,10 @@
                 (item != ansible_default_ipv4.interface) and
                 (item != 'lo') }}"
       with_items: "{{ ansible_interfaces }}"
-      notify: Restart quagga
 
     - name: Write base OSPF config
       blockinfile:
-        dest: /etc/quagga/Quagga.conf
+        dest: /tmp/Quagga.conf
         marker: "!{mark} base ospf config ANSIBLE MANAGED BLOCK"
         create: yes
         block: |
@@ -218,4 +292,13 @@
             passive-interface lo
 
       when: "{{ protocol == 'ospf' }}"
-      notify: Restart quagga
+
+    - name: Copy Quagga Configuration to Container
+      command: docker cp /tmp/Quagga.conf quagga_docker:/etc/quagga/Quagga.conf
+
+    - name: Restart Quagga on Container
+      command: docker exec quagga_docker /usr/lib/quagga/quagga start
+
+    - name: Delete default route added by eth0 DHCP
+      command: ip route del default
+      become: yes
