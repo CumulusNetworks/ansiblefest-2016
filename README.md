@@ -8,3 +8,5 @@ RedistARP directory contains the playbooks for launching docker with MacVlan dri
 Both playbooks assume a 2-tier CLOS with 2 spines and 4 leaves with 2 hosts per leaf.
 
 If you want to modify the size of the network or hosts, modify all the appropriate parameters in properties.yml. Remember to adjust the port numbers as well.
+
+Launch the playbooks via: ansible-playbook -s configure.yml
