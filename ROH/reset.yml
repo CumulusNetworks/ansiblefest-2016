@@ -1,0 +1,67 @@
+---
+- hosts: "!h*"
+  vars_files:
+    - properties.yml
+  gather_facts: False
+  tasks:
+
+    - name: Stop quagga
+      service: name=quagga state=stopped
+
+    - name: Reset quagga config
+      file: path=/etc/quagga/Quagga.conf state=absent
+
+    - name: Wipe out quagga log
+      file: path=/var/log/quagga/quagga.log state=absent
+
+    - name: Wipe out all quagga enabled daemons
+      replace: dest=/etc/quagga/daemons regexp='(ospfd|bgpd|zebra)=yes' replace='\1=no'
+    - name: Clean out /etc/network/interfaces file
+      shell: echo "" > /etc/network/interfaces
+
+    - name: Add basic /etc/network/interfaces file
+      blockinfile:
+        dest: /etc/network/interfaces
+        block: |
+          # The loopback network interface
+          auto lo
+          iface lo inet loopback
+
+          # The primary network interface
+          auto eth0
+          iface eth0 inet dhcp
+
+    - name: Reload interfaces
+      command: ifreload -a
+
+- hosts: "h*"
+  vars_files:
+    - properties.yml
+  tasks:
+    - name: Reset the loopback IP assignment
+      blockinfile:
+        dest: /etc/network/interfaces
+        state: absent
+        marker: "#{mark} loopback IP addr assignment"
+
+    - name: Reset the interfaces config
+      blockinfile:
+        dest: /etc/network/interfaces
+        state: absent
+        marker: "#{mark} {{ item }} interfaces up"
+
+      when: "{{ (item != ansible_default_ipv4.interface) and
+                (item != 'lo')  }}"
+      with_items: "{{ ansible_interfaces }}"
+
+    - name: Wipe out all quagga enabled daemons
+      replace: dest=/etc/quagga/daemons regexp='(ospfd|bgpd|zebra)=yes' replace='\1=no'
+
+    - name: Remove Quagga.conf
+      file: path=/etc/quagga/Quagga.conf state=absent
+
+    - name: Reload all interfaces
+      command: ifup -a
+
+    - name: Shutdown quagga
+      service: name=quagga state=stopped
