@@ -17,7 +17,7 @@ Running the Playbooks
 
 You can then log into any of the hosts, say host-12, and spin up a container via:
   * docker run -it alpine /bin/sh (for ROH)
-  * docker run --net=mv1 -it alpine /bin/sh (for RedustArp)
+  * docker run --net=mv1 --ip=10.128.0.10 -it alpine /bin/sh (for RedustArp)
 
 You should then be able to look at the ip address of the container and ping it from any other node in the network including any other container that you may launch.
 
