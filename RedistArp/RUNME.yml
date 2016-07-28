@@ -53,28 +53,11 @@
     - include: hostset.yml
 
   handlers:
-    - name: Main -- Set sysctls
-      command: sysctl -p /etc/sysctl.d/20-roh.conf
-      tags:
-        - command
-        - hosts
-        - routing
-  
     - name: Main -- Reload link config for hosts
-      command: ifup -a
+      command: reboot
+      become: yes
       tags:
         - command
         - hosts
         - ifconfig
 
-    - name: Main -- Restart quagga
-      service: name=quagga state=restarted
-      tags:
-        - routing
-        - command
-
-    - name: Main -- Reload quagga
-      service: name=quagga state=reloaded
-      tags:
-        - routing
-        - command

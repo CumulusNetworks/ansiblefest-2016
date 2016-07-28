@@ -56,12 +56,15 @@
 
     - name: Wipe out all quagga enabled daemons
       replace: dest=/etc/quagga/daemons regexp='(ospfd|bgpd|zebra)=yes' replace='\1=no'
+      ignore_errors: yes
 
     - name: Remove Quagga.conf
       file: path=/etc/quagga/Quagga.conf state=absent
+      ignore_errors: yes
 
     - name: Reload all interfaces
       command: ifup -a
 
     - name: Shutdown quagga
       service: name=quagga state=stopped
+      ignore_errors: yes

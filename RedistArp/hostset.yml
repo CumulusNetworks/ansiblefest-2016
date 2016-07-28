@@ -27,7 +27,25 @@
         my_gw_ip: |
           {{ "%s.254.254"|format(host_ip_base.split()[0]) }}
 
-    - name: Host - Configure interface for OSPF
+    - name: Host - Wipe out the interfaces file because of ifupdown1 bug
+      file: name=/etc/network/interfaces state=absent
+
+    - name: Host - Write out the basic interfaces
+      blockinfile:
+        dest: /etc/network/interfaces
+        create: yes
+        marker: "#{mark} base interfaces up"
+        block: |
+          source /etc/network/interfaces.d/*
+
+          # The loopback network interface
+          auto lo
+          iface lo inet loopback
+          # The primary network interface
+          auto eth0
+          iface eth0 inet dhcp
+
+    - name: Host - Configure interface
       blockinfile:
         dest: /etc/network/interfaces
         marker: "#{mark} {{ item }} interfaces up"
@@ -40,7 +58,7 @@
       when: "{{ (item != ansible_default_ipv4.interface) and
                 (item != 'lo') and (item != 'lo_1' ) }}"
       with_items: "{{ ansible_interfaces }}"
-      notify: Reload link config for hosts
+      notify: Main -- Reload link config for hosts
 
     - name: Host - Setup key for docker
       apt_key: keyserver=ha.pool.sks-keyservers.net id=58118E89F3A912897C070ADBF76221572C52609D
