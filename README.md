@@ -21,7 +21,7 @@ You can then log into any of the hosts, say host-12, and spin up a container via
 
 Log into some other host, say host-41, and spin up another container via:
  * docker run -it alpine /bin/sh (for ROH)
-  * docker run --net=mv1 --ip=10.128.0.11 -it alpine /bin/sh (for RedustArp)
+ * docker run --net=mv1 --ip=10.128.0.11 -it alpine /bin/sh (for RedustArp)
 
 Log into one container and run ping the other container's IP address.
 
