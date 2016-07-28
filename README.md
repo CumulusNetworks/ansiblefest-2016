@@ -15,6 +15,11 @@ Running the Playbooks
 * Spin up the VMs via 'vagrant up'
 * Launch the playbook in each directory via: ansible-playbook -s RUNME.yml
 
-You can then log into any of the hosts, say host-12, and spin up a container via: docker run -it alpine /bin/sh. You should then be able to look at the ip address of the container and ping it from any other node in the network including any other container that you may launch.
+You can then log into any of the hosts, say host-12, and spin up a container via:
+
+  docker run -it alpine /bin/sh (for ROH)
+  docker run --net=mv1 -it alpine /bin/sh (for RedustArp)
+
+You should then be able to look at the ip address of the container and ping it from any other node in the network including any other container that you may launch.
 
 
