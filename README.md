@@ -9,4 +9,12 @@ Both playbooks assume a 2-tier CLOS with 2 spines and 4 leaves with 2 hosts per 
 
 If you want to modify the size of the network or hosts, modify all the appropriate parameters in properties.yml. Remember to adjust the port numbers as well.
 
-Launch the playbooks via: ansible-playbook -s configure.yml
+=====================
+Running the Playbooks
+======================
+* Spin up the VMs via 'vagrant up'
+* Launch the playbook in each directory via: ansible-playbook -s RUNME.yml
+
+You can then log into any of the hosts, say host-12, and spin up a container via: docker run -it alpine /bin/sh. You should then be able to look at the ip address of the container and ping it from any other node in the network including any other container that you may launch.
+
+
