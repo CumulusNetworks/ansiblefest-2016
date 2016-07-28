@@ -1,0 +1,104 @@
+# This is meant for inclusion in other playbooks
+---
+    - name: Host - Get my node ID
+      set_fact:
+        my_node_id: "{{ inventory_hostname.split('-')[1] }}"
+      tags:
+        - compute
+        - always
+
+    - name: Host - create a list of node number
+      set_fact:
+        mystr: "{{ my_node_id|list }}"
+      tags:
+        - compute
+        - always
+
+    - name: Host - construct my IP
+      set_fact:
+        host_ip_addr: |
+          {{ "%s.253.%s"|format(host_ip_base.split()[0], my_node_id) }}
+      tags:
+        - compute
+        - always
+
+    - name: Host - Construct GW IP for dual attach
+      set_fact:
+        my_gw_ip: |
+          {{ "%s.254.254"|format(host_ip_base.split()[0]) }}
+
+    - name: Host - Configure interface for OSPF
+      blockinfile:
+        dest: /etc/network/interfaces
+        marker: "#{mark} {{ item }} interfaces up"
+        block: |
+          auto {{ item }}
+          iface {{ item }} inet static
+             address {{ host_ip_addr.split()[0]}}/16
+             post-up ip link set promisc on dev {{ item }}
+
+      when: "{{ (item != ansible_default_ipv4.interface) and
+                (item != 'lo') and (item != 'lo_1' ) }}"
+      with_items: "{{ ansible_interfaces }}"
+      notify: Reload link config for hosts
+
+    - name: Host - Setup key for docker
+      apt_key: keyserver=ha.pool.sks-keyservers.net id=58118E89F3A912897C070ADBF76221572C52609D
+      become: yes
+
+    - name: Host - Add docker engine repo
+      apt_repository: repo='deb [arch=amd64] https://apt.dockerproject.org/repo ubuntu-xenial experimental' update_cache=yes
+      become: yes
+
+    - name: Host - Add docker
+      apt: name=docker-engine state=present
+      become: yes
+
+    - name: Host - Add user vagrant to docker group to allow non-sudo access
+      user: name=vagrant append=yes groups=docker
+      become: yes
+
+    - name: Host - Verify installed docker is right version
+      command: curl --unix-socket /var/run/docker.sock http:/info
+      register: docker_version
+
+    - assert: { that: "(docker_version.stdout|from_json)['ExperimentalBuild'] == true" }
+
+    - assert: { that: "(docker_version.stdout|from_json)['ServerVersion']|match('1.12') == true" }
+
+    - name: Host - Enable default arp_notify sysctl
+      sysctl: name=net.ipv4.conf.all.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+      become: yes
+
+    - name: Host - Enable all arp_notify sysctl
+      sysctl: name=net.ipv4.conf.default.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+      become: yes
+
+    - name: Host - Enable arp_notify for every interface
+      sysctl: name=net.ipv4.conf.{{ item }}.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+      with_items: "{{ ansible_interfaces }}"
+      when: "{{ (item != 'lo') and (item != 'lo_1' ) }}"
+      ignore_errors: yes
+      become: yes
+
+    - name: Host - Download the alpine container for later use
+      command: docker pull alpine
+
+    - name: Host - Stop docker service
+      service: name=docker state=stopped
+      become: yes
+
+    - name: Host - Cleanup IP tables NAT rules set by docker
+      command: iptables -F -t nat
+      become: yes
+
+    - name: Host - Cleanup IP tables filter rules set by docker
+      command: iptables -F -t filter
+      become: yes
+
+    - name: Host - Restart docker
+      service: name=docker state=started
+      become: yes
+
+    - name: Host - Create MacVlan device and associate with parent interface
+      command: docker network create -d macvlan --subnet={{ host_ip_base }}.0.0/16 --gateway={{ my_gw_ip }} -o parent={{ macvlan_parent_if }} mv1

@@ -1,0 +1,12 @@
+# This is meant to be included in other main playbooks
+---
+ - include: islif-conf.yml
+
+ - include: brif-conf.yml
+
+ - name: Enable all interfaces
+   command: ifreload -a
+   become: yes
+   tags:
+     - ifconfig
+     - command

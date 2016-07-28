@@ -1,0 +1,39 @@
+---
+- hosts: 'leaf*'
+  vars:
+    bridge_dev: 'bridge.20'
+  vars_files:
+    - properties.yml
+  tasks:
+    - name: Start the rdnbrd service
+      service: name=rdnbrd state=restarted
+      become: yes
+
+    - name: Add lines to Quagga.conf
+      blockinfile:
+        dest: /etc/quagga/Quagga.conf
+        marker: "!{mark} import-table ANSIBLE MANAGED BLOCK"
+        block: |
+          ip import-table 10 distance 20
+          !
+          route-map REDISTARP permit 10
+           match interface {{ bridge_dev }}
+          !
+          ip protocol table route-map REDISTARP
+          !
+      become: yes
+
+    - name: Add redistribute table to BGP
+      blockinfile:
+        dest: /etc/quagga/Quagga.conf
+        marker: "!{mark} bgp redist table ANSIBLE MANAGED BLOCK"
+        block: |
+          router bgp
+          redistribute table 10
+
+      become: yes
+
+    - name: Reload quagga
+      service: name=quagga state=reloaded
+      become: yes
+

@@ -1,0 +1,80 @@
+---
+- hosts: all
+  any_errors_fatal: true
+  vars_files:
+    - properties.yml
+  tasks:
+
+  - name: Main -- Create groups of hosts
+    group_by: key="{{ inventory_hostname.split('-')[0] }}"
+
+  - name: Main -- Create routers group
+    group_by: key='routers'
+    when: "{{ not inventory_hostname | search('^host-') }}"
+
+  - include: validate-properties.yml
+
+- hosts: '!host*'
+  vars_files:
+    - properties.yml
+  any_errors_fatal: true
+  tasks:
+
+  - name: Main -- Get my node ID
+    set_fact:
+      my_node_id: "{{ inventory_hostname.split('-')[1] }}"
+    tags:
+      - compute
+      - always
+
+  - include: ntp.yml
+    
+  - include: assignip.yml
+
+  # Assume my_ip is set(new or taken from existing iface) when assignip returns
+
+  - include: upinterfaces.yml
+
+  - name: Main -- Re-get system facts now that interfaces have been configured
+    action: setup
+    
+  - name: Main -- Start the rdnbrd service
+    service: name=rdnbrd state=restarted
+    become: yes
+    when: "{{ redist_nbr }}"
+
+  - include: "{{ protocol }}set.yml"
+    when: "{{ ansible_lo.ipv4_secondaries is defined }}"
+
+- hosts: 'host*'
+  vars_files:
+    - properties.yml
+  tasks:
+    - include: hostset.yml
+
+  handlers:
+    - name: Main -- Set sysctls
+      command: sysctl -p /etc/sysctl.d/20-roh.conf
+      tags:
+        - command
+        - hosts
+        - routing
+  
+    - name: Main -- Reload link config for hosts
+      command: ifup -a
+      tags:
+        - command
+        - hosts
+        - ifconfig
+
+    - name: Main -- Restart quagga
+      service: name=quagga state=restarted
+      tags:
+        - routing
+        - command
+
+    - name: Main -- Reload quagga
+      service: name=quagga state=reloaded
+      tags:
+        - routing
+        - command

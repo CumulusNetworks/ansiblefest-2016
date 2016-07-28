@@ -1,0 +1,40 @@
+---
+#Setup the switch time zone (Note this will always report changed if re-run after the dpkg-reconfigure)
+#For a list of time zones check: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+    - name: Set time zone /etc/timezone
+      copy: content="America/Los_Angeles" dest=/etc/timezone
+      tags:
+        - time_setup
+        - initial_setup
+     
+    #Update switch tzdata for the new time zone using dpkg-reconfigure
+    - name: Update tzdata with new time zone information
+      command: dpkg-reconfigure -f noninteractive tzdata
+      tags:
+        - time_setup
+        - initial_setup
+     
+    #Remove all of the default Cumulus time servers from the ntp.conf file
+    - name: Setup NTP remove default NTP servers
+      lineinfile: dest=/etc/ntp.conf state=absent regexp="cumulusnetworks.pool.ntp.org"
+      tags:
+        - time_setup
+        - initial_setup
+     
+    #Configure specific time servers by inserting your servers 
+    #after the sample one in the conf file
+    - name: Setup NTP servers
+      lineinfile: dest=/etc/ntp.conf state=present insertafter="#server ntp.your-provider.example" line="server {{ item }}"
+      with_items:
+        - 192.168.100.253
+        - 192.168.100.254
+      tags:
+        - time_setup
+        - initial_setup
+     
+    #Restart the NTP service to apply server changes
+    - name: Restart NTP service
+      service: name=ntp state=restarted
+      tags:
+        - time_setup
+        - initial_setup

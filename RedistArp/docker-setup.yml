@@ -1,0 +1,103 @@
+---
+- hosts: 'host*'
+  vars_files:
+    - properties.yml
+  tasks:
+  - name: Setup key for docker
+    apt_key: keyserver=ha.pool.sks-keyservers.net id=58118E89F3A912897C070ADBF76221572C52609D
+    become: yes
+
+  - name: Add docker engine repo
+    apt_repository: repo='deb [arch=amd64] https://apt.dockerproject.org/repo ubuntu-xenial experimental' update_cache=yes
+    become: yes
+
+  - name: Add docker
+    apt: name=docker-engine state=present
+    become: yes
+
+  - name: Add user vagrant to docker group to allow non-sudo access
+    user: name=vagrant append=yes groups=docker
+    become: yes
+
+  - name: Verify installed docker is right version
+    command: curl --unix-socket /var/run/docker.sock http:/info
+    register: docker_version
+
+  - assert: { that: "(docker_version.stdout|from_json)['ExperimentalBuild'] == true" }
+
+  - assert: { that: "(docker_version.stdout|from_json)['ServerVersion']|match('1.12') == true" }
+
+  - name: Enable default arp_notify sysctl
+    sysctl: name=net.ipv4.conf.all.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+    become: yes
+
+  - name: Enable all arp_notify sysctl
+    sysctl: name=net.ipv4.conf.default.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+    become: yes
+
+  - name: Enable arp_notify for every interface
+    sysctl: name=net.ipv4.conf.{{ item }}.arp_notify value=1 sysctl_file=/etc/sysctl.d/docker.conf reload=yes
+    with_items: "{{ ansible_interfaces }}"
+    when: "{{ (item != 'lo') and (item != 'lo_1' ) }}"
+    ignore_errors: yes
+    become: yes
+
+  - name: create a list of node number
+    set_fact:
+      mystr: "{{ inventory_hostname.split('-')[1]|list }}"
+    tags:
+      - compute
+      - always
+
+  - name: Identify subnet from which docker bridge IP is assigned
+    set_fact:
+      docker_bip: |
+        {% if (mystr[0]|int %2) == 1 %}
+        {{ docker_ip_base + mystr[0] + '.1/24'  }}
+        {%else%}
+        {{ docker_ip_base + (mystr[0]|int -1)|string + '.1/24' }}
+        {%endif%}
+
+    when: "{{ dual_attach_hosts }}"
+
+  - name: Identify subnet from which hosts are assigned IPs for single-attach
+    set_fact:
+      docker_bip: |
+        {{ docker_ip_base + mystr[0] + '.1/24' }}
+
+    when: "{{ not dual_attach_hosts }}"
+
+  - name: Create dir for docker startup customization
+    file: path=/etc/systemd/system/docker.service.d/ state=directory mode=0755
+    become: yes
+
+  - name: Fixup docker to not do NAT
+    blockinfile:
+      dest: /etc/systemd/system/docker.service.d/noiptables.conf
+      create: yes
+      block: |
+        [Service]
+        ExecStart=
+        ExecStart=/usr/bin/docker daemon -H fd:// --iptables=false --ip-masq=false --ip-forward=true --bip={{ docker_bip }}
+
+    become: yes
+
+  - name: Reload systemd config
+    command: systemctl daemon-reload
+    become: yes
+
+  - name: Stop docker service
+    service: name=docker state=stopped
+    become: yes
+
+  - name: Cleanup IP tables NAT rules set by docker
+    command: iptables -F -t nat
+    become: yes
+
+  - name: Cleanup IP tables filter rules set by docker
+    command: iptables -F -t filter
+    become: yes
+
+  - name: Restart docker
+    service: name=docker state=started
+    become: yes

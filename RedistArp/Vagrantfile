@@ -1,0 +1,149 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# All Vagrant configuration is done below. The "2" in Vagrant.configure
+# configures the configuration version (we support older styles for
+# backwards compatibility). Please don't change it unless you know what
+# you're doing.
+
+require 'yaml'
+
+raise "vagrant-cumulus plugin must be installed" unless Vagrant.has_plugin? "vagrant-cumulus"
+
+Vagrant.configure("2") do |config|
+
+  properties = YAML.load_file("properties.yml")
+
+  config.vm.box = "CumulusCommunity/cumulus-vx"
+  config.vm.provision "ansible" do |ansible|
+    ansible.playbook = "init.yml"
+  end
+
+  # Spine configuration
+  1.upto(properties['num_spines']) do |num|
+    nodeName = ("spine-" + num.to_s).to_sym
+    devName = ("spine-" + num.to_s)
+    config.vm.define nodeName do |node|
+      node.vm.host_name = devName
+      1.upto(properties['num_leaves']) do |leaf|
+        leafname = ("leaf-" + leaf.to_s)
+        node.vm.network "private_network",
+                        virtualbox__intnet: devName + "-" + leafname,
+                        auto_config: false
+      end
+      node.vm.provider "virtualbox" do |vb|
+        totalNics = properties['num_leaves']
+        2.upto(totalNics) do |nicId|
+           vb.customize ["modifyvm", :id, "--nicpromisc" + nicId.to_s, "allow-all"]
+        end
+      end
+
+    end
+  end
+
+  # Leaf configuration
+  1.upto(properties['num_leaves']) do |num|
+    devName = ("leaf-" + num.to_s)
+    nodeName = devName.to_sym
+
+    if properties['dual_attach_hosts']
+      if num%2 == 1
+        lname1 = devName
+        lname2 = ("leaf-" + (num+1).to_s)
+      else
+        lname1 = ("leaf-" + (num-1).to_s)
+        lname2 = devName
+      end
+    end
+
+    config.vm.define nodeName do |node|
+      node.vm.host_name = devName
+      1.upto(properties['num_spines']) do |spine|
+        spinename = ("spine-" + spine.to_s)
+        node.vm.network "private_network",
+                        virtualbox__intnet: spinename + "-" + devName,
+                        auto_config: false
+      end
+
+      1.upto(properties['hosts_per_leaf']) do |host|
+        hostName = ("host-" + num.to_s + host.to_s)
+        serverName = hostName.to_sym
+
+        if properties['dual_attach_hosts']
+          if num%2 == 1
+            hname1 = hostName
+            hname2 = ("host-" + (num+1).to_s + host.to_s)
+          else
+            hname1 = ("host-" + (num-1).to_s + host.to_s)
+            hname2 = hostName
+          end
+
+          node.vm.network "private_network",
+                          virtualbox__intnet: devName + "-" + hname1,
+                          auto_config: false
+          node.vm.network "private_network",
+                          virtualbox__intnet: devName + "-" + hname2,
+                          auto_config: false
+
+        else
+          node.vm.network "private_network",
+                          virtualbox__intnet: devName + "-" + hostName,
+                          auto_config: false
+        end
+      end
+
+      if properties['dual_attach_hosts']
+        # Create a 2-link bond as the peer-link
+        node.vm.network "private_network",
+                        virtualbox__intnet: lname1 + "-" + lname2 + "-1",
+                        auto_config: false
+        node.vm.network "private_network",
+                        virtualbox__intnet: lname1 + "-" + lname2  + "-2",
+                        auto_config: false
+        # totalNics = spine_ports +
+        #             host_ports*2 (coz we're connecting to peer's host too)
+        #             + clag peer + 1 for loop below
+        totalNics = properties['num_spines'] + properties['hosts_per_leaf']*2 + 2 + 1
+      else
+        totalNics = properties['num_spines'] + properties['hosts_per_leaf'] + 1
+      end
+
+      node.vm.provider "virtualbox" do |vb|
+        2.upto(totalNics) do |nicId|
+          vb.customize ["modifyvm", :id, "--nicpromisc" + nicId.to_s, "allow-all"]
+        end
+      end
+    end
+
+    1.upto(properties['hosts_per_leaf']) do |host|
+      hostName = ("host-" + num.to_s + host.to_s)
+      serverName = hostName.to_sym
+
+      config.vm.define serverName do |server|
+        server.vm.host_name = hostName
+        server.vm.box = "boxcutter/ubuntu1604"
+        #server.vm.box = "ubuntu/trusty64"
+        if properties['dual_attach_hosts']
+          server.vm.network "private_network",
+                            virtualbox__intnet: lname1 + "-" + hostName,
+                            auto_config: false
+          server.vm.network "private_network",
+                            virtualbox__intnet: lname2 + "-" + hostName,
+                            auto_config: false
+          server.vm.provider "virtualbox" do |svb|
+            2.upto(3) do |nicId|
+              svb.customize ["modifyvm", :id, "--nicpromisc" + nicId.to_s, "allow-all"]
+            end
+          end
+        else
+          server.vm.network "private_network",
+                            virtualbox__intnet: devName + "-" + hostName,
+                            auto_config: false
+          server.vm.provider "virtualbox" do |svb|
+            svb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+          end
+        end
+      end
+    end
+  end
+end

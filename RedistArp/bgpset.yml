@@ -1,0 +1,184 @@
+# This is meant to be included in other main playbooks
+---
+  - name: BGP -- Get my ASN for spines
+    set_fact:
+      my_asn: "{{ bgp_spine_asn }}"
+    when: "{{ 'spine' in group_names }}"
+    tags:
+      - compute
+      - routing
+
+  - name: BGP -- Get my ASN for leaves
+    set_fact:
+      my_asn: "{{ bgp_leaf_asn_base|int + inventory_hostname.split('-')[1]|int }}"
+    when: "{{ 'leaf' in group_names }}"
+    tags:
+      - compute
+      - routing
+
+  - name: BGP -- Add logging and base config
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      create: yes
+      marker: "!{mark} base config ANSIBLE MANAGED BLOCK"
+      block: |
+        !
+        service integrated-vtysh-config
+        log file /var/log/quagga/quagga.log
+        log timestamp precision 6
+        hostname quagga
+        username cumulus nopassword
+        password cn321
+        enable password cn321
+        !
+        ip forwarding
+        ipv6 forwarding
+        line vty
+        !
+    tags:
+      - routing
+        
+  - name: BGP -- Enable IPv6 RA on router ports
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} {{ item }} IPv6 ND ANSIBLE MANAGED BLOCK"
+      create: yes
+      block: |
+        !
+        interface {{ item }}
+           no ipv6 nd suppress-ra
+           ipv6 nd ra-interval 5
+        !
+    with_items: "{{ ansible_interfaces }}"
+    when: "{{ ('spine' in group_names and item|match(spine_to_leaf_ports)) or
+              ('leaf' in group_names and item|match(leaf_to_spine_ports)) or
+              ('leaf' in group_names and item|match(leaf_to_server_ports)) }}"
+    tags:
+      - routing
+
+  - name: BGP -- Build route-map for advertising only loopback IP
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} route-map LOCAL ANSIBLE MANAGED BLOCK"
+      block: |
+          !
+          route-map LOCAL_ROUTES permit 10
+            match interface lo
+    tags:
+      - routing
+
+  - name: BGP -- Redist Nbr config
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} rdnbrd ANSIBLE MANAGED BLOCK"
+      block: |
+          ip import-table 10 distance 20
+          !
+          route-map REDISTARP permit 10
+           match interface bridge.{{ default_vlan }}
+          !
+          ip protocol table route-map REDISTARP
+          !
+    when: "{{ redist_nbr }}"
+
+  - name: BGP -- Core BGP template
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} bgp core ANSIBLE MANAGED BLOCK"
+      block: |
+        !
+        router bgp {{ my_asn}}
+          bgp router-id {{ my_ip }}
+          bgp bestpath as-path multipath-relax no-as-set
+          neighbor EBGP peer-group
+          neighbor EBGP remote-as external
+          neighbor EBGP capability extended-nexthop
+          neighbor SRVR peer-group
+          neighbor SRVR remote-as external
+          neighbor SRVR capability extended-nexthop
+          neighbor SRVR default-originate
+          neighbor SRVR maximum-prefix 10
+          neighbor SRVR route-map INR in
+          neighbor SRVR route-map OUTR out
+          !
+    tags:
+      - routing
+          
+  - name: BGP -- Add unnumbered peering for all defined routed ports
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} nbr {{ item }} ANSIBLE MANAGED BLOCK"
+      block: |
+          !
+          neighbor {{ item }} interface v6only peer-group EBGP
+          !
+    with_items: "{{ ansible_interfaces }}"
+    when: "{{ ('spine' in group_names and item|match(spine_to_leaf_ports)) or
+              ('leaf' in group_names and item|match(leaf_to_spine_ports)) }}"
+    tags:
+      - routing
+
+  - name: BGP -- Add interface sessions for all defined server ports
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} nbr {{ item }} ANSIBLE MANAGED BLOCK"
+      block: |
+          !
+          neighbor {{ item }} interface v6only peer-group SRVR
+          !
+    with_items: "{{ ansible_interfaces }}"
+    when: "{{ ('leaf' in group_names and item|match(leaf_to_server_ports) and
+                not redist_nbr) }}"
+    tags:
+      - routing
+
+  - name: BGP -- Announce local routes
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} network ANSIBLE MANAGED BLOCK"
+      block: |
+          !
+          redistribute connected route-map LOCAL_ROUTES
+          !
+    tags:
+      - routing
+
+  - name: BGP -- Announce Redist Nbr routes
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} bgp redist table ANSIBLE MANAGED BLOCK"
+      block: |
+          !
+          redistribute table 10
+          !
+    when: "{{ redist_nbr }}"
+
+  - name: BGP -- Route-maps for server facing ports
+    blockinfile:
+      dest: /etc/quagga/Quagga.conf
+      marker: "!{mark} route-map SRVR ANSIBLE MANAGED BLOCK"
+      block: |
+        !
+        ip prefix-list DEFONLY seq 5 permit 0.0.0.0/0
+        ip as-path access-list 1 permit ^65535$
+        !
+        route-map INR permit 10
+          match as-path 1
+        !
+        route-map OUTR permit 10
+          match ip address prefix-list DEFONLY
+        !
+    tags:
+      - routing
+        
+  - name: BGP -- Enable BGP and Zebra daemons
+    replace: dest=/etc/quagga/daemons regexp='(bgpd|zebra)=(no|yes)' replace='\1=yes' backup=yes
+    become: yes
+    register: result
+    tags: routing
+
+  - name: BGP -- Start the service to let the config take effect
+    service: name=quagga state=restarted
+    tags:
+      - routing
+      - command

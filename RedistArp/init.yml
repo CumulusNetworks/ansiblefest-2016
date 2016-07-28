@@ -1,0 +1,9 @@
+# Minimum init to get the ball rolling, main playbook is clospf.yml
+---
+- hosts: all
+  gather_facts: False
+  tasks:
+
+  - name: Dummy
+    command: ls
+    
